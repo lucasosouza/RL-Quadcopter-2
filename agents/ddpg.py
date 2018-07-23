@@ -1,6 +1,10 @@
 from keras import layers, models, optimizers
 from keras import backend as K
-from utils import OUNoise, ReplayBuffer
+import numpy as np
+import copy
+import random
+from collections import namedtuple, deque
+
 
 class Actor:
     """Actor (Policy) Model."""
@@ -150,7 +154,7 @@ class DDPG():
         self.noise = OUNoise(self.action_size, self.exploration_mu, self.exploration_theta, self.exploration_sigma)
 
         # Replay memory
-        self.buffer_size = 100000
+        self.buffer_size = 1000000
         self.batch_size = 64
         self.memory = ReplayBuffer(self.buffer_size, self.batch_size)
 
@@ -158,13 +162,32 @@ class DDPG():
         self.gamma = 0.99  # discount factor
         self.tau = 0.01  # for soft update of target parameters
 
+        # Score tracker and learning parameters
+        # need to reset ?
+        self.score = 0
+        self.best_score = -np.inf
+        self.total_reward = 0.0
+        self.count = 0
+
     def reset_episode(self):
         self.noise.reset()
         state = self.task.reset()
         self.last_state = state
+
+        # reset performance tracking metrics
+        self.score = 0        
+        self.best_score = -np.inf
+        self.total_reward = 0.0
+        self.count = 0
+
         return state
 
     def step(self, action, reward, next_state, done):
+
+        # Save experience / reward
+        self.total_reward += reward
+        self.count += 1
+
          # Save experience / reward
         self.memory.add(self.last_state, action, reward, next_state, done)
 
@@ -184,6 +207,12 @@ class DDPG():
 
     def learn(self, experiences):
         """Update policy and value parameters using given batch of experience tuples."""
+
+        # calculate current score
+        self.score = self.total_reward / float(self.count) if self.count else 0.0
+        if self.score > self.best_score:
+            self.best_score = self.score
+
         # Convert experience tuples to separate arrays for each element (states, actions, rewards, etc.)
         states = np.vstack([e.state for e in experiences if e is not None])
         actions = np.array([e.action for e in experiences if e is not None]).astype(np.float32).reshape(-1, self.action_size)
@@ -217,4 +246,54 @@ class DDPG():
 
         new_weights = self.tau * local_weights + (1 - self.tau) * target_weights
         target_model.set_weights(new_weights)
+
+###### HELPER CLASSES
+
+class OUNoise:
+    """Ornstein-Uhlenbeck process."""
+
+    def __init__(self, size, mu, theta, sigma):
+        """Initialize parameters and noise process."""
+        self.mu = mu * np.ones(size)
+        self.theta = theta
+        self.sigma = sigma
+        self.reset()
+
+    def reset(self):
+        """Reset the internal state (= noise) to mean (mu)."""
+        self.state = copy.copy(self.mu)
+
+    def sample(self):
+        """Update internal state and return it as a noise sample."""
+        x = self.state
+        dx = self.theta * (self.mu - x) + self.sigma * np.random.randn(len(x))
+        self.state = x + dx
+        return self.state
+
+class ReplayBuffer:
+    """Fixed-size buffer to store experience tuples."""
+
+    def __init__(self, buffer_size, batch_size):
+        """Initialize a ReplayBuffer object.
+        Params
+        ======
+            buffer_size: maximum size of buffer
+            batch_size: size of each training batch
+        """
+        self.memory = deque(maxlen=buffer_size)  # internal memory (deque)
+        self.batch_size = batch_size
+        self.experience = namedtuple("Experience", field_names=["state", "action", "reward", "next_state", "done"])
+
+    def add(self, state, action, reward, next_state, done):
+        """Add a new experience to memory."""
+        e = self.experience(state, action, reward, next_state, done)
+        self.memory.append(e)
+
+    def sample(self, batch_size=64):
+        """Randomly sample a batch of experiences from memory."""
+        return random.sample(self.memory, k=self.batch_size)
+
+    def __len__(self):
+        """Return the current size of internal memory."""
+        return len(self.memory)
 
